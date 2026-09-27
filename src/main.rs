@@ -220,6 +220,8 @@ fn App() -> Element {
                             span { class: "tab-count", title: "Tokens that appeared since the app started", "{fresh}" }
                         }
                     }
+                    // Which build is running, for bug reports and support.
+                    span { class: "app-version", { concat!("v", env!("CARGO_PKG_VERSION")) } }
                 }
                 if current == Tab::NewListings {
                     NewListingsPanel {
