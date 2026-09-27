@@ -13,6 +13,14 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Each heading is dated on the day its tag was pushed.
 
+## [Unreleased]
+
+### Added
+
+- The version you are running now shows at the right end of the tab bar, so
+  it is at hand when you report a problem or check whether an update
+  installed.
+
 ## [0.1.1] - 2026-09-27
 
 ### Added
