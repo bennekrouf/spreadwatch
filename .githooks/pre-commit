@@ -1,0 +1,38 @@
+#!/usr/bin/env sh
+# Refuses a commit carrying a wallet key or an API key, then formats the Rust
+# files being committed and re-stages them.
+#
+# The secret scan runs first and on every commit, whatever it touches: a
+# keyfile or a trade.toml is JSON/TOML, not Rust. A key caught here never
+# reaches a push; a pushed key is public whatever you do to the history.
+#
+# CI's fmt job is a hard gate, and every failure it could report is one
+# rustfmt fixes without judgement, so it is done here. Only *staged* files are
+# touched — unstaged work is left alone.
+#
+# Enable once, per clone:
+#   git config core.hooksPath .githooks
+#
+# Bypass, if you are certain and in a hurry:
+#   git commit --no-verify
+set -e
+
+if command -v cargo >/dev/null 2>&1; then
+    if ! cargo test --quiet --test no_secrets; then
+        echo "pre-commit: refusing to commit. --no-verify overrides this." >&2
+        exit 1
+    fi
+else
+    echo "pre-commit: cargo not found, skipping the secret scan" >&2
+fi
+
+files=$(git diff --name-only --cached --diff-filter=ACM -- '*.rs')
+[ -z "$files" ] && exit 0
+
+command -v rustfmt >/dev/null 2>&1 || {
+    echo "pre-commit: rustfmt not found, skipping format" >&2
+    exit 0
+}
+
+printf '%s\n' "$files" | xargs rustfmt --edition 2021
+printf '%s\n' "$files" | xargs git add --

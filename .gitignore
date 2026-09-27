@@ -1,0 +1,18 @@
+/target
+/dist
+
+# Generated from assets/icon.png by the release workflow.
+/assets/icon.ico
+
+# Never commit these. They normally live in the settings folder, outside the
+# repository; these patterns catch a copy made here for testing. Anyone who
+# can read the keyfile can spend from the wallet, and trade.toml can hold the
+# Jupiter API key. tests/no_secrets.rs checks tracked files for the same.
+trade.toml
+hot-wallet.json
+*keypair*.json
+daily.json
+watchlist.json
+mexc_listing_dates.json
+.env
+.env.*

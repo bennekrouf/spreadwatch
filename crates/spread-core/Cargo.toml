@@ -1,0 +1,39 @@
+[package]
+name = "spread-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+# native-tls uses the OS TLS stack (Security.framework on macOS), which avoids
+# picking a rustls crypto provider.
+tokio-tungstenite = { version = "0.28", features = ["native-tls"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# MEXC spot streams are protobuf-only; messages are declared with derive, no build step.
+prost = "0.13"
+# Jupiter has no public stream; its quote API is polled over HTTPS.
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
+# On-chain trading: the hot wallet signs Jupiter swap transactions itself.
+solana-keypair = "4"
+solana-signer = "4"
+# `wincode` is the transaction wire codec, and gates `VersionedTransaction::try_new`.
+solana-transaction = { version = "5", features = ["wincode"] }
+wincode = "0.6"
+base64 = "0.22"
+toml = "0.8"
+dirs = "6"
+chrono = "0.4"
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+# Paused clock for the Jupiter request budget tests.
+tokio = { version = "1", features = ["full", "test-util"] }
+
+# Reads a file's access list to tell whether other users can open the hot
+# wallet: Windows has no permission bits to check.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Storage_FileSystem"] }

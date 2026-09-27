@@ -1,0 +1,601 @@
+name: Release
+
+# Builds signed macOS/Windows/Linux artifacts, publishes them to mayorana.ch,
+# and creates a GitHub Release carrying the notes and latest.json only.
+# Adapted from ais-runner's release.yml; the comments there have the history.
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+  # ── Manual trigger from the GitHub Actions UI ──────────────────────────────
+  # Actions → Release → Run workflow. Leave the version empty to auto-bump.
+  # Bumps Cargo.toml + Cargo.lock, stamps CHANGELOG.md, commits, tags and
+  # pushes — then builds that tag in this same run (a tag pushed with
+  # GITHUB_TOKEN does not start a second run).
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g. 0.2.0) — empty = auto-bump'
+        required: false
+        default: ''
+      bump:
+        description: 'Bump type if version is empty'
+        required: false
+        default: 'patch'
+        type: choice
+        options: [patch, minor, major]
+
+permissions:
+  contents: write
+
+env:
+  APP: spreadwatch
+  APP_NAME: Spreadwatch
+  BUNDLE_ID: ch.mayorana.spreadwatch
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── Resolve the tag; on workflow_dispatch, create it first ─────────────────
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          fetch-depth: 0
+
+      - name: Bump version and tag
+        if: github.event_name == 'workflow_dispatch'
+        id: bump
+        env:
+          VERSION_INPUT: ${{ inputs.version }}
+          BUMP_TYPE: ${{ inputs.bump }}
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: github-actions[bot]@users.noreply.github.com
+        run: |
+          set -euo pipefail
+          CURRENT=$(grep '^version' Cargo.toml | head -1 | sed 's/version = "\(.*\)"/\1/')
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          if [[ -n "$VERSION_INPUT" ]]; then NEW="$VERSION_INPUT"
+          elif [[ "$BUMP_TYPE" == "major" ]]; then NEW="$((MAJOR+1)).0.0"
+          elif [[ "$BUMP_TYPE" == "minor" ]]; then NEW="$MAJOR.$((MINOR+1)).0"
+          else NEW="$MAJOR.$MINOR.$((PATCH+1))"
+          fi
+          TAG="v$NEW"
+          echo "Bumping $CURRENT → $NEW (tag: $TAG)"
+
+          sed -i "s/^version = \"$CURRENT\"/version = \"$NEW\"/" Cargo.toml
+          # Refresh Cargo.lock too, or CI's `--locked` fails on main.
+          cargo metadata --format-version 1 --quiet > /dev/null
+          if grep -qE '^## \[[Uu]nreleased\]' CHANGELOG.md; then
+            sed -i "s/^## \[[Uu]nreleased\].*$/## [$NEW] - $(date -u +%F)/" CHANGELOG.md
+          fi
+
+          git add Cargo.toml Cargo.lock CHANGELOG.md
+          git commit -m "chore: release $TAG"
+          git tag "$TAG"
+          git push origin HEAD
+          git push origin "$TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve tag
+        id: tag
+        env:
+          BUMPED: ${{ steps.bump.outputs.tag }}
+        run: echo "tag=${BUMPED:-$GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+
+  build-mac:
+    needs: [prepare]
+    runs-on: macos-latest
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+      SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+      APP_STORE_KEY: ${{ secrets.APP_STORE_CONNECT_KEY }}
+      APP_STORE_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+      APP_STORE_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+    steps:
+      # The tag, not the triggering ref: on workflow_dispatch that ref is the
+      # commit before the version bump.
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-macos-universal-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Check macOS signing secrets
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          missing=()
+          [ -z "${SIGNING_IDENTITY:-}" ]      && missing+=("MACOS_SIGNING_IDENTITY")
+          [ -z "${APP_STORE_KEY:-}" ]         && missing+=("APP_STORE_CONNECT_KEY")
+          [ -z "${APP_STORE_KEY_ID:-}" ]      && missing+=("APP_STORE_CONNECT_KEY_ID")
+          [ -z "${APP_STORE_ISSUER_ID:-}" ]   && missing+=("APP_STORE_CONNECT_ISSUER_ID")
+          [ -z "${MACOS_CERTIFICATE:-}" ]     && missing+=("MACOS_CERTIFICATE")
+          [ -z "${MACOS_CERTIFICATE_PWD:-}" ] && missing+=("MACOS_CERTIFICATE_PWD")
+          [ -z "${KEYCHAIN_PASSWORD:-}" ]     && missing+=("KEYCHAIN_PASSWORD")
+          if [ ${#missing[@]} -eq 0 ]; then
+            echo "All 7 macOS signing secrets present."
+            echo "HAVE_MAC_SECRETS=true" >> "$GITHUB_ENV"
+          elif [ ${#missing[@]} -eq 7 ]; then
+            echo "::warning::No macOS signing secrets configured — skipping the macOS build."
+            echo "HAVE_MAC_SECRETS=false" >> "$GITHUB_ENV"
+          else
+            echo "::error::Incomplete macOS signing configuration. Missing: ${missing[*]}"
+            exit 1
+          fi
+
+      - name: Set up signing keychain
+        if: env.HAVE_MAC_SECRETS == 'true'
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
+          KEYCHAIN_PASSWORD: ${{ secrets.KEYCHAIN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN_PATH" \
+            -P "$MACOS_CERTIFICATE_PWD" -T /usr/bin/codesign
+          security list-keychains -d user -s "$KEYCHAIN_PATH" $(security list-keychains -d user | tr -d '"')
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          rm "$RUNNER_TEMP/cert.p12"
+          echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
+
+      # One universal binary serves Apple Silicon and Intel Macs, so a single
+      # DMG and a single updater entry cover both.
+      - name: Build universal binary
+        if: env.HAVE_MAC_SECRETS == 'true'
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+          mkdir -p dist
+          lipo -create -output "dist/$APP" \
+            "target/aarch64-apple-darwin/release/$APP" \
+            "target/x86_64-apple-darwin/release/$APP"
+          lipo -info "dist/$APP"
+
+      - name: Generate macOS .icns
+        if: env.HAVE_MAC_SECRETS == 'true'
+        run: |
+          set -euo pipefail
+          ICONSET="$RUNNER_TEMP/icon.iconset"
+          mkdir -p "$ICONSET"
+          for size in 16 32 64 128 256 512 1024; do
+            sips -z $size $size assets/icon.png --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
+          done
+          cp "$ICONSET/icon_32x32.png"     "$ICONSET/icon_16x16@2x.png"
+          cp "$ICONSET/icon_64x64.png"     "$ICONSET/icon_32x32@2x.png"
+          cp "$ICONSET/icon_256x256.png"   "$ICONSET/icon_128x128@2x.png"
+          cp "$ICONSET/icon_512x512.png"   "$ICONSET/icon_256x256@2x.png"
+          cp "$ICONSET/icon_1024x1024.png" "$ICONSET/icon_512x512@2x.png"
+          rm "$ICONSET/icon_64x64.png" "$ICONSET/icon_1024x1024.png"
+          iconutil -c icns "$ICONSET" -o dist/icon.icns
+
+      - name: Build .app + .dmg, sign, notarize, staple
+        if: env.HAVE_MAC_SECRETS == 'true'
+        run: |
+          set -euo pipefail
+          VER="${TAG#v}"
+          APPDIR="dist/$APP_NAME.app"
+          DMG="dist/$APP-macos.dmg"
+
+          mkdir -p "$APPDIR/Contents/MacOS" "$APPDIR/Contents/Resources"
+          cp "dist/$APP" "$APPDIR/Contents/MacOS/$APP"
+          chmod +x "$APPDIR/Contents/MacOS/$APP"
+          cp dist/icon.icns "$APPDIR/Contents/Resources/icon.icns"
+
+          cat > "$APPDIR/Contents/Info.plist" <<EOF
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>CFBundleExecutable</key><string>$APP</string>
+            <key>CFBundleIdentifier</key><string>$BUNDLE_ID</string>
+            <key>CFBundleName</key><string>$APP_NAME</string>
+            <key>CFBundleDisplayName</key><string>$APP_NAME</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>$VER</string>
+            <key>CFBundleVersion</key><string>$VER</string>
+            <key>CFBundleIconFile</key><string>icon</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <key>LSApplicationCategoryType</key><string>public.app-category.finance</string>
+            <key>NSHighResolutionCapable</key><true/>
+          </dict></plist>
+          EOF
+
+          codesign --force --options runtime --timestamp \
+            --entitlements .github/macos-entitlements.plist \
+            --sign "$SIGNING_IDENTITY" "$APPDIR/Contents/MacOS/$APP"
+          codesign --force --options runtime --timestamp \
+            --entitlements .github/macos-entitlements.plist \
+            --sign "$SIGNING_IDENTITY" "$APPDIR"
+          codesign --verify --strict --verbose=2 "$APPDIR"
+
+          mkdir -p dmg-staging
+          cp -R "$APPDIR" dmg-staging/
+          ln -s /Applications dmg-staging/Applications
+          hdiutil create -volname "$APP_NAME" -srcfolder dmg-staging -ov -format UDZO "$DMG"
+          codesign --force --timestamp --sign "$SIGNING_IDENTITY" "$DMG"
+
+          P8="$RUNNER_TEMP/AuthKey_${APP_STORE_KEY_ID}.p8"
+          echo "$APP_STORE_KEY" | base64 --decode > "$P8"
+          xcrun notarytool submit "$DMG" --key "$P8" --key-id "$APP_STORE_KEY_ID" \
+            --issuer "$APP_STORE_ISSUER_ID" --wait
+          rm -f "$P8"
+          xcrun stapler staple "$DMG"
+          xcrun stapler validate "$DMG"
+          (cd dist && shasum -a 256 "$APP-macos.dmg" > "$APP-macos.dmg.sha256")
+
+      - name: Clean up keychain
+        if: always() && env.HAVE_MAC_SECRETS == 'true'
+        run: security delete-keychain "$KEYCHAIN_PATH" || true
+
+      - uses: actions/upload-artifact@v4
+        if: env.HAVE_MAC_SECRETS == 'true'
+        with:
+          name: ${{ env.APP }}-macos
+          path: |
+            dist/${{ env.APP }}-macos.dmg
+            dist/${{ env.APP }}-macos.dmg.sha256
+
+  build-windows:
+    needs: [prepare]
+    runs-on: windows-latest
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-windows-cargo-${{ hashFiles('Cargo.lock') }}
+
+      # ImageMagick is preinstalled on windows-latest as `magick`. build.rs
+      # embeds the result into the .exe.
+      - name: Generate Windows .ico
+        shell: pwsh
+        run: magick assets/icon.png -define icon:auto-resize=16,24,32,48,64,128,256 assets/icon.ico
+
+      - name: Build
+        run: cargo build --release --locked
+
+      - name: Copy WebView2Loader.dll
+        shell: pwsh
+        run: |
+          $dll = Get-ChildItem "target\release\build\webview2-com-sys-*\out\x64\WebView2Loader.dll" | Select-Object -First 1
+          if ($dll) { Copy-Item $dll.FullName "target\release\WebView2Loader.dll" -Force }
+          else { Write-Error "WebView2Loader.dll not found in build output" }
+
+      # The .exe is signed before Inno Setup packages it, then the installer
+      # itself: an unsigned binary inside a signed installer still trips
+      # SmartScreen and enterprise policies.
+      - name: Check Windows signing secrets
+        id: winsign
+        shell: pwsh
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          TS_ENDPOINT: ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
+          TS_ACCOUNT: ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
+          TS_CERT_PROFILE: ${{ secrets.TRUSTED_SIGNING_CERT_PROFILE }}
+        run: |
+          $names = @('AZURE_TENANT_ID','AZURE_CLIENT_ID','AZURE_CLIENT_SECRET',
+                     'TS_ENDPOINT','TS_ACCOUNT','TS_CERT_PROFILE')
+          $missing = $names | Where-Object { -not [Environment]::GetEnvironmentVariable($_) }
+          if ($missing.Count -eq 0) {
+            "have=true" | Out-File -Append $env:GITHUB_OUTPUT
+          } elseif ($missing.Count -eq $names.Count) {
+            "have=false" | Out-File -Append $env:GITHUB_OUTPUT
+            Write-Host "::warning::No Windows signing secrets configured — the .exe will ship unsigned."
+          } else {
+            Write-Host "::error::Incomplete Windows signing configuration. Missing: $($missing -join ', ')"
+            exit 1
+          }
+
+      - name: Sign application binary
+        if: steps.winsign.outputs.have == 'true'
+        uses: azure/trusted-signing-action@v0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.TRUSTED_SIGNING_CERT_PROFILE }}
+          files-folder: target\release
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer
+        shell: pwsh
+        run: |
+          $iscc = @(
+            "C:\Program Files (x86)\Inno Setup 6\ISCC.exe",
+            "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe"
+          ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $iscc) { Write-Error "ISCC.exe not found" }
+          $version = "$env:TAG".TrimStart("v")
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          & $iscc /DMyAppVersion=$version installer\installer.iss
+
+      - name: Sign installer
+        if: steps.winsign.outputs.have == 'true'
+        uses: azure/trusted-signing-action@v0
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.TRUSTED_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.TRUSTED_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.TRUSTED_SIGNING_CERT_PROFILE }}
+          files-folder: dist
+          files-folder-filter: exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+
+      # After signing: signing rewrites the file.
+      - name: Checksum installer
+        shell: pwsh
+        run: |
+          $exe = "$env:APP-setup.exe"
+          $hash = (Get-FileHash "dist\$exe" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $exe" | Out-File "dist\$exe.sha256" -Encoding ASCII
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP }}-windows
+          path: |
+            dist\${{ env.APP }}-setup.exe
+            dist\${{ env.APP }}-setup.exe.sha256
+
+  build-linux:
+    needs: [prepare]
+    # The oldest supported runner, on purpose: the binary requires the glibc
+    # it was built against or newer, so building on 22.04 lets it run on
+    # Ubuntu 22.04+, Debian 12+ and current Fedora/Arch alike.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-linux-x86_64-cargo-${{ hashFiles('Cargo.lock') }}
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            pkg-config
+
+      - name: Build
+        run: cargo build --release --locked --target x86_64-unknown-linux-gnu
+
+      - name: Package tar.gz
+        run: |
+          set -euo pipefail
+          NAME="$APP-linux-x86_64"
+          DIST="dist/$NAME"
+          mkdir -p "$DIST"
+          cp "target/x86_64-unknown-linux-gnu/release/$APP" "$DIST/"
+          cp scripts/setup-linux.sh README.md LICENSE trade.example.toml "$DIST/"
+          cp assets/icon.png "$DIST/icon.png"
+          chmod +x "$DIST/setup-linux.sh"
+          tar -czf "$NAME.tar.gz" -C dist "$NAME"
+          sha256sum "$NAME.tar.gz" > "$NAME.tar.gz.sha256"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APP }}-linux-x86_64
+          path: |
+            ${{ env.APP }}-linux-x86_64.tar.gz
+            ${{ env.APP }}-linux-x86_64.tar.gz.sha256
+
+  release:
+    needs: [prepare, build-mac, build-windows, build-linux]
+    # Publish whatever built: one platform failing must not withhold the
+    # others. A run with no artifacts at all is caught below.
+    if: always() && !cancelled() && needs.prepare.result == 'success'
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ needs.prepare.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.tag }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Require at least one artifact
+        run: |
+          count=$(find artifacts -type f | wc -l | tr -d ' ')
+          echo "Artifacts staged: $count"
+          if [ "$count" -eq 0 ]; then
+            echo "::error::No platform artifacts were produced — nothing to release."
+            exit 1
+          fi
+
+      # latest.json is the updater feed and the published checksums. Its URLs
+      # point at mayorana.ch, not GitHub.
+      - name: Flatten artifacts + generate latest.json
+        env:
+          DL_BASE: ${{ vars.DOWNLOAD_BASE_URL }}
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          find artifacts -type f -exec cp {} release/ \;
+          ls -lh release/
+          VER="${TAG#v}"
+          BASE="${DL_BASE:-https://mayorana.ch/downloads/$APP}"
+          BASE="${BASE%/}/$TAG"
+          MAC="$APP-macos.dmg"
+          WIN="$APP-setup.exe"
+          LINUX="$APP-linux-x86_64.tar.gz"
+          sha() { [ -f "release/$1" ] && sha256sum "release/$1" | awk '{print $1}' || echo ""; }
+          url() { [ -f "release/$1" ] && echo "$BASE/$1" || echo ""; }
+          cat > release/latest.json <<EOF
+          {
+            "name": "$APP",
+            "version": "$VER",
+            "tag": "$TAG",
+            "released_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "platforms": {
+              "macos":   { "dmg":        { "url": "$(url "$MAC")",   "sha256": "$(sha "$MAC")" } },
+              "windows": { "exe_or_msi": { "url": "$(url "$WIN")",   "sha256": "$(sha "$WIN")" } },
+              "linux":   { "tarball":    { "url": "$(url "$LINUX")", "sha256": "$(sha "$LINUX")" } }
+            }
+          }
+          EOF
+          cat release/latest.json
+
+      # CHANGELOG.md is the only place a release note is written. latest/ is
+      # synced with --delete, so a generation failure must still leave a feed
+      # behind: fall back to the published copy, then to an empty feed.
+      - name: Generate releases.json from CHANGELOG.md
+        run: |
+          set -euo pipefail
+          if ! python3 scripts/changelog_to_json.py --json \
+                 --version "${TAG#v}" --date "$(date -u +%Y-%m-%d)" \
+                 > release/releases.json; then
+            echo "::warning::Could not build releases.json from CHANGELOG.md — keeping the published feed."
+            curl -fsS "https://mayorana.ch/downloads/$APP/latest/releases.json" -o release/releases.json \
+              || echo "{\"name\":\"$APP\",\"releases\":[]}" > release/releases.json
+          fi
+
+      # nginx serves /var/www/mayorana-downloads/<app>/{<tag>,latest}/ straight
+      # off disk. The deploy key is confined with rrsync to that root and has
+      # no shell, so /var/www/mayorana-downloads/spreadwatch must already exist
+      # on the server.
+      - name: Publish artifacts to mayorana.ch
+        env:
+          SSH_KEY: ${{ secrets.DIST_SSH_KEY }}
+          SSH_HOST: ${{ secrets.DIST_SSH_HOST }}
+          SSH_USER: ${{ secrets.DIST_SSH_USER }}
+          SSH_KNOWN: ${{ secrets.DIST_SSH_KNOWN_HOSTS }}
+          DEST_ROOT: ${{ vars.DIST_DEST_ROOT }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          # A fork gets a green run without deploy secrets; this repository
+          # must not finish a release that published nothing.
+          if [ -z "${SSH_KEY:-}" ] || [ -z "${SSH_HOST:-}" ] || [ -z "${SSH_USER:-}" ]; then
+            if [ "$(echo "${OWNER:-}" | tr 'A-Z' 'a-z')" != "bennekrouf" ]; then
+              echo "::warning::DIST_SSH_* not set — skipping publish on fork '${OWNER:-unknown}'."
+              exit 0
+            fi
+            echo "::error::DIST_SSH_KEY/HOST/USER are not set — refusing to finish a release that publishes nothing."
+            exit 1
+          fi
+          ROOT="${DEST_ROOT:-}/$APP"
+          install -m 700 -d ~/.ssh
+          trap 'rm -f ~/.ssh/dist_key' EXIT
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/dist_key
+          chmod 600 ~/.ssh/dist_key
+          if [ -n "${SSH_KNOWN:-}" ]; then
+            printf '%s\n' "$SSH_KNOWN" > ~/.ssh/known_hosts
+          else
+            echo "::warning::DIST_SSH_KNOWN_HOSTS unset — accepting the host key unverified."
+            ssh-keyscan -H "$SSH_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+          fi
+          chmod 600 ~/.ssh/known_hosts
+          SSH="ssh -i $HOME/.ssh/dist_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+          # Versioned copy first: if latest/ then fails, the release is still
+          # reachable at its immutable URL.
+          rsync -av --chmod=F644 -e "$SSH" release/ "$SSH_USER@$SSH_HOST:$ROOT/$TAG/"
+          rsync -av --delete --chmod=F644 -e "$SSH" release/ "$SSH_USER@$SSH_HOST:$ROOT/latest/"
+          echo "Published $TAG → $SSH_HOST:$ROOT/{$TAG,latest}/"
+
+      # ── Public release: notes + manifest only, no binaries ─────────────────
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PAGE_URL: ${{ vars.DOWNLOAD_PAGE_URL }}
+        run: |
+          set -euo pipefail
+          PAGE="${PAGE_URL:-https://mayorana.ch/en/apps/$APP}"
+          CHANGES=$(python3 scripts/changelog_to_json.py --notes \
+            --version "${TAG#v}" --date "$(date -u +%Y-%m-%d)" || true)
+          : > notes.md
+          if [ -n "$CHANGES" ]; then
+            printf "## What's new in %s\n\n%s\n\n" "$TAG" "$CHANGES" >> notes.md
+          fi
+          cat >> notes.md <<EOF
+          Every version, with its notes: **[mayorana.ch/en/apps/$APP/releases](https://mayorana.ch/en/apps/$APP/releases)**
+
+          ## Download
+
+          Free for individuals — grab a signed build at **[$PAGE]($PAGE)**:
+
+          | Platform | File |
+          |---|---|
+          | macOS (Apple Silicon and Intel) | \`$APP-macos.dmg\` |
+          | Windows | \`$APP-setup.exe\` |
+          | Linux (x86_64) | \`$APP-linux-x86_64.tar.gz\` |
+
+          Direct links for this exact version are in \`latest.json\`, attached below,
+          along with the \`sha256\` of every artifact so you can verify what you got.
+
+          Every build is signed — Apple Developer ID (notarized and stapled) on macOS,
+          Azure Trusted Signing on Windows — so it installs without a Gatekeeper or
+          SmartScreen warning.
+
+          ## Building from source
+
+          The source for this release is the \`$TAG\` tag. See \`LICENSE\` for the terms.
+          Builds you produce yourself are unsigned, so macOS and Windows will warn.
+          EOF
+          gh release create "$TAG" --title "$APP_NAME $TAG" --notes-file notes.md \
+            release/latest.json release/releases.json

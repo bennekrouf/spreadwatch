@@ -1,0 +1,35 @@
+# The desktop app is the root package; spread-core holds feeds and the engine
+# with no UI dependency, so it can be tested and run headless on its own.
+[workspace]
+members = ["crates/spread-core"]
+resolver = "2"
+
+[package]
+name = "spreadwatch"
+version = "0.1.0"
+edition = "2021"
+default-run = "spreadwatch"
+description = "Cross-venue crypto spreads, lead/lag and new listings, with Jupiter swaps"
+license-file = "LICENSE"
+
+[dependencies]
+dioxus = { version = "0.6", features = ["desktop"] }
+tokio = { version = "1", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+spread-core = { path = "crates/spread-core" }
+# Opens Solscan links in the system browser instead of inside the webview.
+open = "5"
+# Copy buttons write to the system clipboard directly; the webview's
+# clipboard API is not reliably available in a desktop app.
+arboard = { version = "3", default-features = false }
+# Update check and notice banner, fetched from mayorana.ch. Same TLS choice
+# as spread-core, so no second TLS stack gets compiled.
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "6"
+
+# Embeds assets/icon.ico and the product name into the .exe (see build.rs).
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"

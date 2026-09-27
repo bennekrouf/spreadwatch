@@ -1,0 +1,11 @@
+[application]
+name = "spreadwatch"
+default_platform = "desktop"
+
+[desktop]
+title = "Spreadwatch"
+
+[bundle]
+identifier = "ch.mayorana.spreadwatch"
+publisher = "Bennekrouf"
+icon = ["assets/icon.png"]

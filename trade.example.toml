@@ -1,0 +1,28 @@
+# Settings for Spreadwatch. Copy to trade.toml in the settings folder:
+#   macOS / Linux: ~/.config/spreadwatch/trade.toml  (then: chmod 600 trade.toml)
+#   Windows:       %LOCALAPPDATA%\Spreadwatch\trade.toml
+# Keep it private: it can hold API keys. Every line is optional; the value
+# shown is the default. Unknown keys make the whole file ignored, with a notice
+# in the trade panel.
+
+# Hot wallet keyfile, Solana CLI format. Created by "Create hot wallet".
+# keypair_path = "~/.config/spreadwatch/hot-wallet.json"   (Windows: in the folder above)
+
+# Solana RPC. The public endpoint is rate-limited and unreliable for sending;
+# use a provider URL (Helius, Triton, QuickNode...) before trading live.
+# rpc_url = "https://api.mainnet-beta.solana.com"
+
+# Safety limits. The app caps them at 10 SOL, 50 SOL, 300 bps and
+# 1_000_000 lamports whatever is written here.
+# max_trade_sol = 1.0
+# max_daily_sol = 5.0
+# max_slippage_bps = 50
+# max_priority_fee_lamports = 100_000
+
+# Jupiter API key from https://portal.jup.ag (free plan: 60 requests/min
+# instead of 30 keyless). The JUPITER_API_KEY environment variable overrides it.
+# jupiter_api_key = "..."
+
+# Only for paid Jupiter plans: your plan's requests per minute (Developer: 600).
+# The price feed polls faster to match and always leaves 10/min for trades.
+# jupiter_rpm = 600

@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+# release.sh — cut a release locally or just bump the patch automatically
+#
+# After pushing the tag, GitHub Actions (release.yml) automatically:
+#   1. Builds the signed macOS DMG, Windows installer and Linux tarball
+#   2. Publishes them, latest.json and releases.json to mayorana.ch
+#   3. Creates the GitHub Release (notes + latest.json, no binaries)
+#
+# Usage:
+#   ./scripts/release.sh            # auto-bump patch (0.3.1 → 0.3.2), show plan, confirm
+#   ./scripts/release.sh 0.4.0      # explicit version
+#   ./scripts/release.sh --minor    # bump minor  (0.3.1 → 0.4.0)
+#   ./scripts/release.sh --major    # bump major  (0.3.1 → 1.0.0)
+#   ./scripts/release.sh --dry-run  # show what would happen, don't do it
+#   ./scripts/release.sh --no-notes # release with nothing in CHANGELOG.md (build-only)
+#
+# Flags combine, e.g. `./scripts/release.sh --minor --dry-run`.
+
+set -euo pipefail
+
+CARGO="Cargo.toml"
+DRY_RUN=false
+ALLOW_NO_NOTES=false
+
+CARGO_VERSION=$(grep '^version' "$CARGO" | head -1 | sed 's/version = "\(.*\)"/\1/')
+
+# Base the bump on the highest tag ever pushed, not on Cargo.toml's version on
+# this branch — a release cut from a branch that never merged back to main
+# (or any divergent history) leaves Cargo.toml stale here, and bumping off it
+# recomputes a tag that already exists elsewhere.
+LATEST_TAG=$(git tag -l 'v*' | sed 's/^v//' | sort -V | tail -1)
+CURRENT="${LATEST_TAG:-$CARGO_VERSION}"
+IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+
+# ── Compute target version ────────────────────────────────────────────────────
+NEW="$MAJOR.$MINOR.$((PATCH + 1))"
+for arg in "$@"; do
+    case "$arg" in
+        --dry-run)            DRY_RUN=true ;;
+        --no-notes)           ALLOW_NO_NOTES=true ;;
+        --patch)              NEW="$MAJOR.$MINOR.$((PATCH + 1))" ;;
+        --minor)              NEW="$MAJOR.$((MINOR + 1)).0" ;;
+        --major)              NEW="$((MAJOR + 1)).0.0" ;;
+        [0-9]*.[0-9]*.[0-9]*) NEW="$arg" ;;
+        *)
+            echo "Usage: $0 [--patch|--minor|--major|<version>] [--dry-run] [--no-notes]"
+            exit 1
+            ;;
+    esac
+done
+
+TAG="v$NEW"
+
+# ── Pre-flight checks ─────────────────────────────────────────────────────────
+ERRORS=()
+
+if [[ ! "$NEW" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    ERRORS+=("Version must be semver (e.g. 1.2.3), got: $NEW")
+fi
+
+if git rev-parse "$TAG" &>/dev/null; then
+    ERRORS+=("Tag $TAG already exists")
+fi
+
+if [[ -n "$(git status --porcelain)" ]]; then
+    ERRORS+=("Working tree is dirty — commit or stash first")
+fi
+
+if [[ ${#ERRORS[@]} -gt 0 ]]; then
+    for e in "${ERRORS[@]}"; do echo "❌ $e"; done
+    exit 1
+fi
+
+# ── Show release plan ─────────────────────────────────────────────────────────
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  Release plan"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+echo "  Cargo.toml   : $CARGO_VERSION → $NEW"
+echo "  Git tag      : $TAG"
+echo "  Branch       : $(git branch --show-current)"
+echo ""
+
+# Changelog since last tag
+LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+if [[ -n "$LAST_TAG" ]]; then
+    COUNT=$(git log "$LAST_TAG"..HEAD --oneline | wc -l | tr -d ' ')
+    echo "  Commits since $LAST_TAG: $COUNT"
+    git log "$LAST_TAG"..HEAD --oneline --no-decorate | sed 's/^/    /'
+else
+    echo "  (no previous tag — first release)"
+fi
+echo ""
+
+# ── Release notes ─────────────────────────────────────────────────────────────
+# CHANGELOG.md is what the GitHub Release body and the public releases page are
+# both built from, so a release with nothing written in it ships a version
+# number and no explanation. This used to be a warning, and 0.5.51–0.5.54 all
+# went out past it with no notes. Now it blocks; a build-only release is still
+# a real thing, and --no-notes says so explicitly.
+CHANGELOG="CHANGELOG.md"
+NOTES_STATE="missing"
+if [[ -f "$CHANGELOG" ]]; then
+    if grep -q "^## \[$NEW\]" "$CHANGELOG"; then
+        NOTES_STATE="dated"
+    elif awk '/^## \[[Uu]nreleased\]/{f=1;next} /^## /{f=0} f && /^- /{found=1} END{exit !found}' "$CHANGELOG"; then
+        NOTES_STATE="unreleased"
+    fi
+fi
+
+case "$NOTES_STATE" in
+    dated)      echo "  Release notes: CHANGELOG.md already has a [$NEW] section" ;;
+    unreleased) echo "  Release notes: [Unreleased] → [$NEW] (dated $(date +%F))" ;;
+    missing)
+        if $ALLOW_NO_NOTES; then
+            echo "  ⚠️  Release notes: none — $TAG ships with no notes (--no-notes)"
+        else
+            echo "  ❌ Release notes: nothing under [Unreleased] in $CHANGELOG"
+            echo "     Add the entry (## [Unreleased] + ### Added/Changed/Fixed/Removed),"
+            echo "     or pass --no-notes for a build-only release."
+            $DRY_RUN || exit 1
+        fi
+        ;;
+esac
+echo ""
+
+$DRY_RUN && { echo "Dry run — nothing done."; exit 0; }
+
+if [[ -t 0 ]]; then
+    read -r -p "Proceed? [y/N] " CONFIRM
+    [[ "$CONFIRM" =~ ^[Yy]$ ]] || { echo "Aborted."; exit 0; }
+else
+    echo "No TTY on stdin — proceeding without confirmation."
+fi
+
+# ── Bump + commit + tag ───────────────────────────────────────────────────────
+# Match against CARGO_VERSION (what's literally in the file), not CURRENT
+# (which may come from a tag and differ from this branch's Cargo.toml).
+if [[ "$OSTYPE" == "darwin"* ]]; then
+    sed -i '' "s/^version = \"$CARGO_VERSION\"/version = \"$NEW\"/" "$CARGO"
+else
+    sed -i    "s/^version = \"$CARGO_VERSION\"/version = \"$NEW\"/" "$CARGO"
+fi
+
+if ! grep -q "^version = \"$NEW\"" "$CARGO"; then
+    echo "❌ Failed to bump Cargo.toml version ($CARGO_VERSION → $NEW) — aborting before commit/tag."
+    exit 1
+fi
+
+# Refresh Cargo.lock so its recorded version matches the bump, and commit it
+# with the manifest — otherwise CI's `cargo test --locked` fails on main
+# for every release.
+cargo metadata --format-version 1 --quiet >/dev/null
+
+# Stamp the notes with the version they are shipping in. CI can do this for
+# itself when generating the feed, but only the file in the repository is what
+# the next release reads, so the heading is settled here once.
+if [[ "$NOTES_STATE" == "unreleased" ]]; then
+    if [[ "$OSTYPE" == "darwin"* ]]; then
+        sed -i '' "s/^## \[[Uu]nreleased\].*$/## [$NEW] - $(date +%F)/" "$CHANGELOG"
+    else
+        sed -i    "s/^## \[[Uu]nreleased\].*$/## [$NEW] - $(date +%F)/" "$CHANGELOG"
+    fi
+    git add "$CHANGELOG"
+fi
+
+git add "$CARGO" Cargo.lock
+git commit -m "chore: release $TAG"
+git tag "$TAG"
+
+# ── Push ─────────────────────────────────────────────────────────────────────
+git push origin HEAD
+git push origin "$TAG"
+
+echo ""
+echo "🚀  $TAG pushed — CI is running:"
+echo "    https://github.com/bennekrouf/spreadwatch/actions"
+echo ""
+echo "    In ~15 min:"
+echo "    • GitHub Release  → https://github.com/bennekrouf/spreadwatch/releases/latest"
+echo "    • Releases page   → https://mayorana.ch/en/apps/spreadwatch/releases"
