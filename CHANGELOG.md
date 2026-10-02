@@ -21,6 +21,12 @@ Each heading is dated on the day its tag was pushed.
   it is at hand when you report a problem or check whether an update
   installed.
 
+## [0.1.2] - 2026-09-27
+
+### Changed
+
+- Packaging only — no user-visible change.
+
 ## [0.1.1] - 2026-09-27
 
 ### Added
