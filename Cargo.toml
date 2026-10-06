@@ -6,7 +6,7 @@ resolver = "2"
 
 [package]
 name = "spreadwatch"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 default-run = "spreadwatch"
 description = "Cross-venue crypto spreads, lead/lag and new listings, with Jupiter swaps"

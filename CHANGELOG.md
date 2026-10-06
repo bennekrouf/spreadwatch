@@ -13,7 +13,7 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Each heading is dated on the day its tag was pushed.
 
-## [Unreleased]
+## [0.1.5] - 2026-10-06
 
 ### Added
 
