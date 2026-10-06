@@ -1,5 +1,6 @@
 mod components;
 mod notice;
+mod telemetry;
 mod update_check;
 
 use std::time::Duration;
@@ -131,6 +132,9 @@ fn App() -> Element {
     use_future(move || async move {
         tokio::time::sleep(Duration::from_secs(3)).await;
         if let Some(info) = update_check::check().await {
+            telemetry::record(telemetry::Event::UpdateOffered {
+                to: info.latest_version.clone(),
+            });
             update_info.set(Some(info));
         }
     });
@@ -139,6 +143,24 @@ fn App() -> Element {
         tokio::time::sleep(Duration::from_secs(4)).await;
         if let Some(n) = notice::fetch().await {
             mayorana_notice.set(Some(n));
+        }
+    });
+
+    // Anonymous usage statistics. On by default, but only once the person has
+    // been told: `start` reads the opt-outs (including a shell profile's),
+    // records the launch, and says whether the notice is still owed.
+    let mut ask_consent = use_signal(|| false);
+    use_future(move || async move {
+        if telemetry::start().await {
+            ask_consent.set(true);
+        }
+        telemetry::flush_forever().await;
+    });
+    // Recorded while the notice is on screen, so collection starts from the
+    // next event — never from one the person had no chance to read about.
+    use_effect(move || {
+        if ask_consent() {
+            telemetry::mark_informed();
         }
     });
 
@@ -177,6 +199,9 @@ fn App() -> Element {
                         button {
                             class: "banner-link",
                             onclick: move |_| {
+                                telemetry::record(telemetry::Event::UpdateClicked {
+                                    to: info.latest_version.clone(),
+                                });
                                 let _ = open::that(&info.release_url);
                             },
                             "Download"
@@ -203,6 +228,33 @@ fn App() -> Element {
                                 mayorana_notice.set(None);
                             },
                             "×"
+                        }
+                    }
+                }
+                // Usage-statistics notice, once, in the same place and style as
+                // the other banners. Either button is remembered.
+                if ask_consent() {
+                    div { class: "banner notice",
+                        span { class: "banner-text",
+                            strong { "Spreadwatch shares anonymous usage statistics. " }
+                            "Whether it is installed and opened, and its version and operating \
+                             system — never your watchlist, trades, keys or anything you type."
+                        }
+                        button {
+                            class: "banner-link",
+                            onclick: move |_| {
+                                telemetry::set_consent(true);
+                                ask_consent.set(false);
+                            },
+                            "OK"
+                        }
+                        button {
+                            class: "banner-link",
+                            onclick: move |_| {
+                                telemetry::set_consent(false);
+                                ask_consent.set(false);
+                            },
+                            "Turn off"
                         }
                     }
                 }

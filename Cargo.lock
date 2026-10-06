@@ -4704,8 +4704,10 @@ name = "spreadwatch"
 version = "0.1.4"
 dependencies = [
  "arboard",
+ "base64 0.22.1",
  "dioxus",
  "dirs",
+ "getrandom 0.3.4",
  "open",
  "reqwest",
  "serde",
