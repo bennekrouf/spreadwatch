@@ -13,6 +13,17 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Each heading is dated on the day its tag was pushed.
 
+## [Unreleased]
+
+### Added
+
+- Spreadwatch now shares anonymous usage statistics: whether it is installed and
+  opened, its version and your operating system. It is on by default; a note at
+  the bottom of the window tells you once, and nothing is sent before you have
+  seen it. **Turn off** there stops it for good and deletes anything not yet
+  sent. Your files, data and accounts are never part of it. It also stays off if
+  `DO_NOT_TRACK`, `DISABLE_UPDATE_CHECK` or `MAYORANA_NO_TELEMETRY` is set.
+
 ## [0.1.4] - 2026-10-02
 
 ### Changed
