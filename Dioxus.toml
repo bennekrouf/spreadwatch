@@ -7,5 +7,5 @@ title = "Spreadwatch"
 
 [bundle]
 identifier = "ch.mayorana.spreadwatch"
-publisher = "Bennekrouf"
+publisher = "Mayorana"
 icon = ["assets/icon.png"]

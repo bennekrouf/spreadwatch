@@ -7,7 +7,7 @@
 #endif
 
 #define MyAppName      "Spreadwatch"
-#define MyAppPublisher "Bennekrouf"
+#define MyAppPublisher "Mayorana"
 #define MyAppURL       "https://mayorana.ch/en/apps/spreadwatch"
 #define MyAppExeName   "spreadwatch.exe"
 ; Never reuse another app's AppId: installers sharing one uninstall each other.
