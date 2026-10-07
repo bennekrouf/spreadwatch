@@ -13,6 +13,14 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Each heading is dated on the day its tag was pushed.
 
+## [Unreleased]
+
+### Changed
+
+- The publisher information for Spreadwatch has been updated to 'Mayorana'. This
+  change affects the metadata associated with the application, such as the
+  installer and executable details.
+
 ## [0.1.5] - 2026-10-06
 
 ### Added
