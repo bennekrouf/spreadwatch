@@ -1,4 +1,5 @@
 mod components;
+mod licence;
 mod notice;
 mod telemetry;
 mod update_check;
@@ -14,7 +15,8 @@ use spread_core::{EngineConfig, MarketCmd, MarketSnapshot};
 use tokio::sync::{mpsc, watch};
 
 use components::{
-    EventLog, LagPanel, NewListingsPanel, RoutesPanel, Tab, TradePanel, VenueCard, Watchlist,
+    EventLog, LagPanel, NewListingsPanel, Pro, ProButton, ProWindow, RoutesPanel, Tab, TradePanel,
+    VenueCard, Watchlist,
 };
 
 /// The trade module swaps SOL/USDT only.
@@ -100,6 +102,21 @@ fn App() -> Element {
     let mut trade = use_signal(TradeState::default);
     let mut scan = use_signal(ScanSnapshot::default);
     let mut tab = use_context_provider(|| Signal::new(Tab::Market));
+
+    // Spreadwatch Pro. The engine applies the watchlist limit; it is told
+    // again whenever the licence changes, so activating a key mid-session
+    // follows every asset straight away.
+    let pro = use_context_provider(|| Pro {
+        open: Signal::new(false),
+        status: Signal::new(licence::current()),
+    });
+    let market_cmds = use_context::<mpsc::Sender<MarketCmd>>();
+    use_effect(move || {
+        let limit = pro.status.read().asset_limit();
+        if let Err(e) = market_cmds.try_send(MarketCmd::SetLimit(limit)) {
+            tracing::warn!("could not set the watchlist limit: {e}");
+        }
+    });
 
     use_future(move || {
         let rx = rx.clone();
@@ -187,7 +204,11 @@ fn App() -> Element {
                 selected: selected.clone(),
                 adding: m.adding.clone(),
                 notice: m.notice.clone(),
+                locked: m.locked.clone(),
+                limit: m.limit,
+                at_limit: m.at_limit,
             }
+            ProWindow {}
             main { class: "app",
                 if let (Some(info), false) = (update_info.read().clone(), update_dismissed()) {
                     div { class: "banner",
@@ -274,6 +295,7 @@ fn App() -> Element {
                     }
                     // Which build is running, for bug reports and support.
                     span { class: "app-version", { concat!("v", env!("CARGO_PKG_VERSION")) } }
+                    ProButton {}
                 }
                 if current == Tab::NewListings {
                     NewListingsPanel {

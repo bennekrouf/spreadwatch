@@ -63,7 +63,10 @@ written in [`CHANGELOG.md`](CHANGELOG.md) and published from there.
 
 ### Watchlist
 
-Follow any asset by its ticker (BTC, ETH, JUP, BONK…). Each one is quoted
+Follow any asset by its ticker (BTC, ETH, JUP, BONK…). The free version follows
+3 at once; [Spreadwatch Pro](https://mayorana.ch/en/apps/spreadwatch) follows
+any number. Assets saved past the limit stay in the list, marked 🔒 Pro, and
+are followed again as soon as there is room or a licence. Each one is quoted
 against USDT on **Binance, Bybit, OKX, MEXC and Gate**, plus **Jupiter** for
 Solana tokens. If Gate does not trade a followed asset yet, Spreadwatch polls
 Gate's public API and tells you when the coin, then its USDT pair, appears.
@@ -183,8 +186,11 @@ Source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE).
 
 - **Free** for personal use, learning, research and hobby projects, and for
   charities, schools, universities and government institutions.
-- **Commercial use requires a licence.**
-  [Get in touch](https://mayorana.ch/en/contact).
+- **Commercial use requires a licence** — including a solo consultant using it
+  on client work, and an employee using it at their job. That licence is
+  [Spreadwatch Pro](https://mayorana.ch/en/apps/spreadwatch), bought on
+  Spreadwatch's page; it also lifts the free version's limit of 3 followed
+  assets.
 
 The name, logo and icons are trademarks and are not covered by that licence —
 fork it and rebrand it. See [TRADEMARK.md](TRADEMARK.md).

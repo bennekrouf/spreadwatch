@@ -243,3 +243,34 @@ h3 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: v
   cursor: pointer;
 }
 .banner-dismiss:hover { color: var(--text); }
+
+/* ── Spreadwatch Pro ─────────────────────────────────────────────────── */
+.pro-btn {
+  align-self: center; margin-left: 10px; padding: 3px 10px; border-radius: 6px;
+  border: 1px solid var(--green); background: transparent; color: var(--green);
+  font: inherit; font-size: 12px; cursor: pointer; white-space: nowrap;
+}
+.pro-btn:hover { background: color-mix(in srgb, var(--green) 15%, transparent); }
+.pro-btn.active { border-color: var(--blue); color: var(--blue); font-weight: 600; letter-spacing: .04em; }
+.pro-btn.renew { border-color: var(--amber); color: var(--amber); }
+.watchlist-head { display: flex; align-items: baseline; justify-content: space-between; }
+.limit { font-weight: normal; font-variant-numeric: tabular-nums; }
+.limit.full { color: var(--amber); }
+.watchlist .item.locked { opacity: .55; }
+.watchlist .item.locked:hover { opacity: .85; }
+.lock-tag { color: var(--amber); }
+.modal-backdrop {
+  position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center;
+  background: rgba(0, 0, 0, .55);
+}
+.modal { width: min(520px, calc(100vw - 32px)); display: flex; flex-direction: column; gap: 10px; }
+.modal h2 { margin: 0; }
+.modal p { margin: 0; }
+.pro-ok { color: var(--green); }
+.licence-key {
+  width: 100%; box-sizing: border-box; padding: 8px; border-radius: 6px; resize: vertical;
+  background: var(--bg); color: var(--text); border: 1px solid var(--border);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px;
+}
+.modal-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+

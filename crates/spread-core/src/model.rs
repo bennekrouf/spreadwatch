@@ -342,4 +342,10 @@ pub struct MarketSnapshot {
     pub adding: Option<String>,
     /// Last problem with the watchlist, e.g. an invalid symbol.
     pub notice: Option<String>,
+    /// Watchlist assets past the limit: listed, not followed.
+    pub locked: Vec<String>,
+    /// How many assets may be followed at once; `None` for no limit.
+    pub limit: Option<usize>,
+    /// The limit is reached: adding another asset is refused.
+    pub at_limit: bool,
 }
