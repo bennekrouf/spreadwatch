@@ -13,6 +13,19 @@ Versioning: [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 Each heading is dated on the day its tag was pushed.
 
+## [Unreleased]
+
+### Added
+
+- Spreadwatch Pro. The free version follows 3 assets at once, with every tab,
+  every venue and trading; Pro follows any number, and is the licence for
+  commercial use. Buy it on [Spreadwatch's page](https://mayorana.ch/en/apps/spreadwatch),
+  then click **Get Pro…** at the right of the tab bar and paste the key. The
+  key is checked on your computer: no account, nothing sent anywhere.
+- If your watchlist already holds more than 3 assets, none is removed: the
+  first 3 are followed and the others stay in the list marked 🔒 Pro. Remove
+  one to make room, then click a locked one to follow it.
+
 ## [0.1.6] - 2026-10-07
 
 ### Changed

@@ -3,6 +3,12 @@
 //! Feeds send quotes tagged with their asset; this routes them, runs the UI's
 //! add/remove/select commands, and publishes a summary line per asset plus
 //! the full snapshot of the selected one.
+//!
+//! The app can cap how many assets are followed ([`MarketCmd::SetLimit`]): the
+//! free version of Spreadwatch follows three. Nothing is ever dropped from the
+//! saved watchlist for it: assets past the limit stay listed, locked and not
+//! polled, and come back the moment the limit is lifted. Without the command
+//! (the CLI, tests) there is no limit.
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -26,6 +32,10 @@ pub enum MarketCmd {
     Add(String),
     Remove(String),
     Select(String),
+    /// Follow a locked asset again, if there is room.
+    Follow(String),
+    /// How many assets may be followed at once; `None` for no limit.
+    SetLimit(Option<usize>),
 }
 
 /// Jupiter tokens below this liquidity are too thin to price anything.
@@ -151,6 +161,9 @@ pub async fn run(
         cfg,
         jupiter: jupiter.clone(),
         tracked: Vec::new(),
+        locked: Vec::new(),
+        limit: None,
+        persist: true,
         conn: [ConnState::Connecting; Venue::COUNT],
         selected: None,
         adding: None,
@@ -195,6 +208,8 @@ pub async fn run(
                     }
                 }
                 Some(MarketCmd::Remove(symbol)) => market.remove(&symbol),
+                Some(MarketCmd::Follow(symbol)) => market.follow(&symbol),
+                Some(MarketCmd::SetLimit(limit)) => market.set_limit(limit),
                 Some(MarketCmd::Select(symbol)) => {
                     if market.tracked.iter().any(|t| *t.symbol == *symbol) {
                         market.selected = Some(symbol.into());
@@ -221,6 +236,12 @@ struct Market {
     cfg: EngineConfig,
     jupiter: Arc<JupiterApi>,
     tracked: Vec<Tracked>,
+    /// Saved in the watchlist but past the limit: listed, not followed.
+    locked: Vec<Asset>,
+    /// How many assets may be followed at once; `None` for no limit.
+    limit: Option<usize>,
+    /// Whether changes are written to watchlist.json (off in tests).
+    persist: bool,
     /// Current connection state per venue, to seed engines added later.
     conn: [ConnState; Venue::COUNT],
     selected: Option<Arc<str>>,
@@ -265,7 +286,15 @@ impl Market {
     }
 
     fn save(&mut self) {
-        let assets: Vec<Asset> = self.tracked.iter().map(|t| t.asset.clone()).collect();
+        if !self.persist {
+            return;
+        }
+        let assets: Vec<Asset> = self
+            .tracked
+            .iter()
+            .map(|t| t.asset.clone())
+            .chain(self.locked.iter().cloned())
+            .collect();
         if let Err(e) = save_watchlist(&assets) {
             self.notice = Some(format!("could not save the watchlist: {e}"));
         }
@@ -305,9 +334,84 @@ impl Market {
             self.selected = Some(symbol.into());
             return None;
         }
+        if self.locked.iter().any(|a| a.symbol == symbol) {
+            self.follow(&symbol);
+            return None;
+        }
+        if self.full() {
+            self.notice = Some(self.limit_notice(&symbol));
+            return None;
+        }
         self.notice = None;
         self.adding = Some(symbol.clone());
         Some(symbol)
+    }
+
+    /// No room to follow another asset.
+    fn full(&self) -> bool {
+        self.limit.is_some_and(|n| self.tracked.len() >= n)
+    }
+
+    fn limit_notice(&self, symbol: &str) -> String {
+        format!(
+            "The free version follows {} assets. Remove one to follow {symbol}, or get Pro.",
+            self.limit.unwrap_or_default()
+        )
+    }
+
+    /// Caps how many assets are followed. Assets past the cap keep their place
+    /// in the watchlist, locked; lifting it follows them all again.
+    fn set_limit(&mut self, limit: Option<usize>) {
+        if self.limit == limit {
+            return;
+        }
+        self.limit = limit;
+        match limit {
+            // The first `n` stay followed; the rest go in front of the assets
+            // already locked, so the watchlist keeps its order.
+            Some(n) if self.tracked.len() > n => {
+                let past: Vec<Asset> = self.tracked.drain(n..).map(|t| t.asset).collect();
+                self.locked.splice(0..0, past);
+            }
+            Some(_) => {}
+            None => {
+                for asset in std::mem::take(&mut self.locked) {
+                    self.track(asset);
+                }
+            }
+        }
+        if self
+            .selected
+            .as_ref()
+            .is_some_and(|s| !self.tracked.iter().any(|t| t.symbol == *s))
+        {
+            self.selected = self.tracked.first().map(|t| t.symbol.clone());
+        }
+        if self
+            .notice
+            .as_deref()
+            .is_some_and(|n| n.starts_with("The free version"))
+        {
+            self.notice = None;
+        }
+        self.republish_lists();
+    }
+
+    /// Follows a locked asset again, when there is room for it.
+    fn follow(&mut self, symbol: &str) {
+        let Some(i) = self.locked.iter().position(|a| a.symbol == symbol) else {
+            return;
+        };
+        if self.full() {
+            self.notice = Some(self.limit_notice(symbol));
+            return;
+        }
+        let asset = self.locked.remove(i);
+        self.track(asset);
+        self.notice = None;
+        self.selected = Some(symbol.into());
+        self.republish_lists();
+        self.save();
     }
 
     fn finish_add(&mut self, symbol: String, token: anyhow::Result<Option<JupToken>>) {
@@ -393,6 +497,7 @@ impl Market {
     fn remove(&mut self, symbol: &str) {
         self.notice = None;
         self.tracked.retain(|t| &*t.symbol != symbol);
+        self.locked.retain(|a| a.symbol != symbol);
         if self.selected.as_deref() == Some(symbol) {
             self.selected = self.tracked.first().map(|t| t.symbol.clone());
         }
@@ -428,6 +533,9 @@ impl Market {
             detail: detail.unwrap_or_default(),
             adding: self.adding.clone(),
             notice: self.notice.clone(),
+            locked: self.locked.iter().map(|a| a.symbol.clone()).collect(),
+            limit: self.limit,
+            at_limit: self.full(),
         }
     }
 }
@@ -468,5 +576,117 @@ mod tests {
             json!({"id": "3NZ", "symbol": "WBTC", "isVerified": true, "liquidity": 39_413_461.0, "decimals": 8, "name": "Wrapped BTC"}),
         ];
         assert!(pick_token("BTC", &btc).is_none());
+    }
+
+    fn market() -> Market {
+        let (symbols_tx, _) = watch::channel(Vec::new());
+        let (tokens_tx, _) = watch::channel(Vec::new());
+        Market {
+            cfg: EngineConfig::default(),
+            jupiter: JupiterApi::new(None, None),
+            tracked: Vec::new(),
+            locked: Vec::new(),
+            limit: None,
+            persist: false,
+            conn: [ConnState::Connecting; Venue::COUNT],
+            selected: None,
+            adding: None,
+            notice: None,
+            gate_checking: HashSet::new(),
+            symbols_tx,
+            tokens_tx,
+        }
+    }
+
+    fn asset(symbol: &str) -> Asset {
+        Asset {
+            symbol: symbol.into(),
+            jupiter: None,
+        }
+    }
+
+    fn followed(m: &Market) -> Vec<&str> {
+        m.tracked.iter().map(|t| &*t.symbol).collect()
+    }
+
+    fn locked(m: &Market) -> Vec<&str> {
+        m.locked.iter().map(|a| a.symbol.as_str()).collect()
+    }
+
+    #[test]
+    fn a_limit_locks_the_assets_past_it_and_lifting_it_follows_them_again() {
+        let mut m = market();
+        for s in ["SOL", "BTC", "ETH", "JUP", "BONK"] {
+            m.track(asset(s));
+        }
+        m.selected = Some("JUP".into());
+        m.set_limit(Some(3));
+        assert_eq!(followed(&m), ["SOL", "BTC", "ETH"]);
+        assert_eq!(locked(&m), ["JUP", "BONK"]);
+        assert_eq!(
+            m.selected.as_deref(),
+            Some("SOL"),
+            "a locked asset can't stay selected"
+        );
+        assert!(m.full());
+
+        m.set_limit(None);
+        assert_eq!(followed(&m), ["SOL", "BTC", "ETH", "JUP", "BONK"]);
+        assert!(m.locked.is_empty());
+        assert!(!m.full());
+    }
+
+    #[test]
+    fn at_the_limit_adding_is_refused_and_a_removal_makes_room() {
+        let mut m = market();
+        m.set_limit(Some(3));
+        for s in ["SOL", "BTC", "ETH"] {
+            m.track(asset(s));
+        }
+        assert_eq!(m.begin_add("wif"), None);
+        assert!(m
+            .notice
+            .as_deref()
+            .unwrap()
+            .starts_with("The free version follows 3 assets"));
+        assert!(m.adding.is_none());
+
+        m.tracked.retain(|t| &*t.symbol != "BTC");
+        assert_eq!(m.begin_add("wif"), Some("WIF".into()));
+    }
+
+    #[test]
+    fn a_locked_asset_is_followed_again_when_there_is_room() {
+        let mut m = market();
+        for s in ["SOL", "BTC", "ETH", "JUP"] {
+            m.track(asset(s));
+        }
+        m.set_limit(Some(3));
+        m.follow("JUP");
+        assert_eq!(locked(&m), ["JUP"], "no room yet");
+        assert!(m.notice.is_some());
+
+        // Removing one makes room; adding a locked symbol follows it.
+        m.tracked.retain(|t| &*t.symbol != "ETH");
+        assert_eq!(
+            m.begin_add("jup"),
+            None,
+            "already in the watchlist: no lookup"
+        );
+        assert_eq!(followed(&m), ["SOL", "BTC", "JUP"]);
+        assert!(m.locked.is_empty());
+        assert_eq!(m.selected.as_deref(), Some("JUP"));
+    }
+
+    #[test]
+    fn removing_a_locked_asset_drops_it_from_the_watchlist() {
+        let mut m = market();
+        for s in ["SOL", "BTC", "ETH", "JUP"] {
+            m.track(asset(s));
+        }
+        m.set_limit(Some(3));
+        m.remove("JUP");
+        assert!(m.locked.is_empty());
+        assert_eq!(followed(&m), ["SOL", "BTC", "ETH"]);
     }
 }

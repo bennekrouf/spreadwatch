@@ -1,5 +1,6 @@
 mod event_log;
 mod lag;
+mod pro;
 mod routes;
 mod scanner;
 mod trade;
@@ -8,6 +9,7 @@ mod watchlist;
 
 pub use event_log::EventLog;
 pub use lag::LagPanel;
+pub use pro::{Pro, ProButton, ProWindow};
 pub use routes::RoutesPanel;
 pub use scanner::NewListingsPanel;
 pub use trade::TradePanel;
